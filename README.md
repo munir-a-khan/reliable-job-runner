@@ -1,6 +1,27 @@
+![Reliable job runner: Submit. Retry. Recover. Python and SQLite local reliability lab.](docs/assets/banner.svg)
+
 # Reliable job runner
 
 A small, AI-assisted learning demo: HTTP submission → durable SQLite history → independent worker → synthetic square calculation. Python 3.11+ standard library only for the app and tests. Runs on localhost; no deployment, credentials, arbitrary commands or external side effects.
+
+**Real software, synthetic data.** These are actual headless-browser captures from the running app, not mockups. The history shows immediate success, two transient failures followed by success, exhausted retries, and permanent failure.
+
+![Actual dashboard showing five synthetic jobs, three committed square results, and nine persisted attempts.](docs/dashboard.png)
+
+<p align="center">
+  <a href="docs/dashboard-mobile.png"><img src="docs/dashboard-mobile.png" width="280" alt="Actual mobile dashboard at 390 pixels wide; the job history table scrolls horizontally and every persisted attempt is visible." /></a>
+</p>
+
+## When a worker disappears
+
+![Illustrated crash-before-commit sequence: claim attempt one, worker exits without a result, lease expiry and backoff lead to attempt two, then result and success commit together.](docs/assets/recovery.svg)
+
+1. A worker claims a job and records its lease, fencing token and attempt.
+2. It dies before committing a result. The expired attempt remains in history.
+3. After lease expiry and backoff, another worker claims with a new token.
+4. The result and success state commit together. A stale worker cannot commit.
+
+This diagram illustrates the real subprocess crash test. The photos above show app execution with synthetic failures; they do not depict a process crash. **Execution can repeat; committed local demo effects remain unique.** [Read the exact validation evidence](docs/VALIDATION.md).
 
 ## Run on Windows
 
