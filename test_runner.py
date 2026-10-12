@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -61,6 +62,7 @@ class RunnerTests(unittest.TestCase):
         self.store.finish(self.store.claim())
         self.assertEqual(self.store.history()['jobs'][0]['state'], 'failed')
         self.assertEqual(len(self.store.history()['attempts']), 1)
+        self.assertEqual(self.store.history()['effects'], [])
 
     def test_retry_exhaustion_and_backoff(self):
         self.store.submit('exhaust', payload(failures=5))
@@ -78,7 +80,9 @@ class RunnerTests(unittest.TestCase):
         self.store.claim()
         self.ready()
         new = self.store.claim()
+        before = self.store.history()
         self.assertFalse(self.store.finish(old))
+        self.assertEqual(self.store.history(), before)
         self.assertTrue(self.store.finish(new))
         self.assertEqual(len(self.store.history()['effects']), 1)
 
@@ -92,8 +96,22 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(h['attempts'][0]['outcome'], 'lease_expired')
         self.assertEqual(h['effects'], [])
 
+    def test_finish_checks_clock_after_lock_wait(self):
+        self.store.submit('lock-wait', payload())
+        job = self.store.claim(0.15)
+        with self.store.db() as blocker:
+            blocker.execute('BEGIN IMMEDIATE')
+            with concurrent.futures.ThreadPoolExecutor(1) as pool:
+                result = pool.submit(self.store.finish, job)
+                time.sleep(0.25)
+                blocker.commit()
+                self.assertFalse(result.result(timeout=3))
+        self.assertEqual(self.store.history()['effects'], [])
+
     def crash(self, flag):
         proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name('runner.py')), 'worker', '--db', str(self.path), '--once', '--lease-seconds', '0.2', flag, '30'], stdout=subprocess.PIPE, text=True)
+        watchdog = threading.Timer(10, lambda: proc.kill() if proc.poll() is None else None)
+        watchdog.start()
         try:
             self.assertIn('claimed', proc.stdout.readline())
             if flag == '--pause-after-commit':
@@ -101,6 +119,7 @@ class RunnerTests(unittest.TestCase):
             proc.kill()
             proc.wait(timeout=5)
         finally:
+            watchdog.cancel()
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)

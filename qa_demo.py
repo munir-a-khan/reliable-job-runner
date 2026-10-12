@@ -36,6 +36,25 @@ def main():
                 raise AssertionError('conflict accepted')
             except urllib.error.HTTPError as e:
                 assert e.code == 409
+            for headers, body, expected in (
+                    ({'Origin': 'https://example.com'}, b'{}', 403),
+                    ({'Host': 'example.com:8766'}, b'{}', 403),
+                    ({}, b'x' * 2049, 409),
+                    ({'Content-Type': 'text/plain'}, b'{}', 409),
+                    ({}, b'[' * 1500, 409)):
+                req = urllib.request.Request(url + '/api/jobs', data=body,
+                    headers={'Content-Type': 'application/json'} | headers)
+                try:
+                    urllib.request.urlopen(req, timeout=3).close()
+                    raise AssertionError('invalid boundary accepted')
+                except urllib.error.HTTPError as e:
+                    assert e.code == expected
+            req = urllib.request.Request(url + '/api/jobs', headers={'Host': 'example.com:8766'})
+            try:
+                urllib.request.urlopen(req, timeout=3).close()
+                raise AssertionError('invalid read host accepted')
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
             submit('recovered', failures=2)
             submit('exhausted', failures=5)
             submit('permanent', permanent=True)
@@ -47,7 +66,7 @@ def main():
                 time.sleep(0.1)
             assert sorted(j['state'] for j in h['jobs']) == ['failed', 'failed', 'succeeded', 'succeeded']
             assert len(h['effects']) == 2
-            print('HTTP end-to-end: PASS (create, duplicate, conflict, worker, retry, exhaustion, permanent)')
+            print('HTTP end-to-end: PASS (create, duplicate, conflict, worker, retry, exhaustion, permanent, origin/host/size/type/nesting boundaries)')
             from playwright.sync_api import sync_playwright
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -65,6 +84,7 @@ def main():
                 (root / 'docs').mkdir(exist_ok=True)
                 page.screenshot(path=str(root / 'docs' / 'dashboard.png'), full_page=True)
                 page.set_viewport_size({'width': 390, 'height': 844})
+                assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
                 page.screenshot(path=str(root / 'docs' / 'dashboard-mobile.png'), full_page=True)
                 browser.close()
             print('Headless dashboard: PASS (render, submit, refresh, no JS errors; screenshots saved)')

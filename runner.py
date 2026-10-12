@@ -69,9 +69,9 @@ class Store:
             return job_id, True
 
     def claim(self, lease_seconds=5):
-        now = time.time()
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
+            now = time.time()
             expired = c.execute("SELECT * FROM jobs WHERE state='running' AND lease<=?", (now,)).fetchall()
             for job in expired:
                 c.execute("UPDATE attempts SET ended=?,outcome='lease_expired' WHERE token=? AND ended IS NULL", (now, job['token']))
@@ -88,10 +88,10 @@ class Store:
             return dict(job) | {'attempts': number, 'token': token}
 
     def finish(self, job):
-        now = time.time()
         p = json.loads(job['payload'])
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
+            now = time.time()
             current = c.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone()
             if current['state'] != 'running' or current['token'] != job['token'] or current['lease'] <= now:
                 return False  # Fence stale workers before committing any demo effect.
@@ -111,13 +111,16 @@ class Store:
 
 def worker(store, once=False, lease_seconds=5, pause_after_claim=0, pause_after_commit=0):
     while True:
-        job = store.claim(lease_seconds)
-        if job:
-            print('claimed ' + job['id'], flush=True)
-            time.sleep(pause_after_claim)
-            store.finish(job)
-            print('finished ' + job['id'], flush=True)
-            time.sleep(pause_after_commit)
+        try:
+            job = store.claim(lease_seconds)
+            if job:
+                print('claimed ' + job['id'], flush=True)
+                time.sleep(pause_after_claim)
+                committed = store.finish(job)
+                print(('finished ' if committed else 'fenced ') + job['id'], flush=True)
+                time.sleep(pause_after_commit)
+        except sqlite3.OperationalError:
+            print('database temporarily unavailable; retrying', flush=True)
         if once:
             return
         time.sleep(0.2)
@@ -168,10 +171,11 @@ def serve(store, port):
                     raise ValueError('request requires key and payload')
                 job_id, created = store.submit(data['key'], data['payload'])
                 self.send(201 if created else 200, {'id': job_id, 'created': created})
-            except (ValueError, UnicodeError):
+            except (ValueError, UnicodeError, RecursionError):
                 self.send(409, {'error': 'invalid request or key/payload conflict'})
+            except sqlite3.Error:
+                self.send(503, {'error': 'database unavailable'})
     server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
-    server.socket.settimeout(1)
     print(f'Dashboard: http://127.0.0.1:{port}', flush=True)
     server.serve_forever()
 
